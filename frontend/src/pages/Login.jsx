@@ -3,7 +3,7 @@ import { Navigate, useNavigate } from 'react-router-dom'
 import { User } from 'lucide-react'
 import toast from 'react-hot-toast'
 import AuthStartupScreen from '../components/AuthStartupScreen'
-import { login } from '../api/client'
+import { getApiErrorMessage, login, register } from '../api/client'
 import { useAuth } from '../contexts/AuthContext'
 import { useSettings } from '../contexts/SettingsContext'
 
@@ -13,6 +13,9 @@ export default function Login() {
   const [showSwitchUser, setShowSwitchUser] = useState(() => !localStorage.getItem('lastUser'))
   const [username, setUsername] = useState(() => localStorage.getItem('lastUser') || '')
   const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [isRegistering, setIsRegistering] = useState(false)
+  const [formError, setFormError] = useState('')
   const [loading, setLoading] = useState(false)
   const { user, loading: authLoading, connectionError, loginUser, multiUser, retryConnection } = useAuth()
   const { t } = useSettings()
@@ -28,16 +31,51 @@ export default function Login() {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
+    setFormError('')
+    const submittedUsername = isRegistering ? username.trim() : username
+
+    if (isRegistering) {
+      const usernameLength = Array.from(submittedUsername).length
+      if (usernameLength < 2 || usernameLength > 32 || /[\u0000-\u001f\u007f-\u009f]/u.test(submittedUsername)) {
+        setFormError(t('auth.invalidUsername'))
+        return
+      }
+      if (Array.from(password).length < 8) {
+        setFormError(t('auth.invalidPassword'))
+        return
+      }
+      if (new TextEncoder().encode(password).length > 72) {
+        setFormError(t('auth.passwordTooLong'))
+        return
+      }
+      if (password !== confirmPassword) {
+        setFormError(t('auth.passwordsDoNotMatch'))
+        return
+      }
+    }
     setLoading(true)
 
     try {
-      const data = await login(username, password)
-      localStorage.setItem('lastUser', username)
+      const data = isRegistering
+        ? await register(submittedUsername, password)
+        : await login(submittedUsername, password)
+      localStorage.setItem('lastUser', data.user.username)
       localStorage.setItem('lastUserAvatar', data.user.avatar_id || '')
       loginUser(data.access_token, data.user)
+      if (isRegistering) toast.success(t('auth.accountCreated'))
       navigate('/')
     } catch (err) {
-      toast.error(err.response?.data?.detail || t('auth.loginFailed'))
+      if (isRegistering) {
+        const code = err.response?.data?.detail?.code
+        if (err.response?.status === 429) setFormError(t('auth.registrationRateLimited'))
+        else if (code === 'username_taken') setFormError(t('auth.usernameTaken'))
+        else if (code === 'invalid_username') setFormError(t('auth.invalidUsername'))
+        else if (code === 'invalid_password') setFormError(t('auth.passwordTooLong'))
+        else if (code === 'registration_unavailable') setFormError(t('auth.registrationUnavailable'))
+        else setFormError(getApiErrorMessage(err, t('auth.registrationFailed')))
+      } else {
+        toast.error(getApiErrorMessage(err, t('auth.loginFailed')))
+      }
     } finally {
       setLoading(false)
     }
@@ -56,12 +94,76 @@ export default function Login() {
           <div className="mb-8 text-center">
             <p className="text-xs font-semibold uppercase tracking-[0.35em] text-text-muted">PokéCollector</p>
             <h1 className="mt-4 text-3xl font-semibold text-text-primary">
-              {lastUser && !showSwitchUser ? t('auth.welcomeBack') : t('auth.login')}
+              {isRegistering ? t('auth.registerTitle') : lastUser && !showSwitchUser ? t('auth.welcomeBack') : t('auth.login')}
             </h1>
-            <p className="mt-2 text-sm text-text-muted">{t('auth.signInToCollection')}</p>
+            <p className="mt-2 text-sm text-text-muted">
+              {isRegistering ? t('auth.registerDescription') : t('auth.signInToCollection')}
+            </p>
           </div>
 
-          {lastUser && !showSwitchUser ? (
+          {isRegistering ? (
+            <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+              <div>
+                <label htmlFor="register-username" className="mb-1 block text-xs text-text-secondary">{t('auth.username')}</label>
+                <input
+                  id="register-username"
+                  name="username"
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  className="input w-full"
+                  autoComplete="username"
+                  autoCapitalize="none"
+                  spellCheck={false}
+                  aria-describedby="register-username-hint"
+                  disabled={loading}
+                  autoFocus
+                  required
+                />
+                <p id="register-username-hint" className="mt-1 text-xs text-text-muted">{t('auth.usernameHint')}</p>
+              </div>
+
+              <div>
+                <label htmlFor="register-password" className="mb-1 block text-xs text-text-secondary">{t('auth.password')}</label>
+                <input
+                  id="register-password"
+                  name="password"
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="input w-full"
+                  autoComplete="new-password"
+                  aria-describedby="register-password-hint"
+                  disabled={loading}
+                  required
+                />
+                <p id="register-password-hint" className="mt-1 text-xs text-text-muted">{t('auth.passwordHint')}</p>
+              </div>
+
+              <div>
+                <label htmlFor="register-confirm-password" className="mb-1 block text-xs text-text-secondary">{t('auth.confirmPassword')}</label>
+                <input
+                  id="register-confirm-password"
+                  name="confirmPassword"
+                  type="password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  className="input w-full"
+                  autoComplete="new-password"
+                  disabled={loading}
+                  required
+                />
+              </div>
+
+              {formError && (
+                <p role="alert" className="rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-300">{formError}</p>
+              )}
+
+              <button type="submit" disabled={loading} className="btn-primary w-full">
+                {loading ? t('auth.registering') : t('auth.register')}
+              </button>
+            </form>
+          ) : lastUser && !showSwitchUser ? (
             <form onSubmit={handleSubmit} className="space-y-5">
               <div className="flex flex-col items-center text-center">
                 <div
@@ -105,6 +207,7 @@ export default function Login() {
 
               <button
                 type="button"
+                disabled={loading}
                 onClick={() => {
                   setShowSwitchUser(true)
                   setUsername('')
@@ -149,6 +252,24 @@ export default function Login() {
               </button>
             </form>
           )}
+
+          <div className="mt-6 border-t border-border pt-5 text-center text-sm text-text-muted">
+            <p>{isRegistering ? t('auth.alreadyHaveAccount') : t('auth.noAccount')}</p>
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => {
+                setIsRegistering(!isRegistering)
+                setUsername(isRegistering ? lastUser : '')
+                setPassword('')
+                setConfirmPassword('')
+                setFormError('')
+              }}
+              className="mt-2 font-semibold text-text-primary underline decoration-white/30 underline-offset-4 transition-colors hover:decoration-white disabled:opacity-50"
+            >
+              {isRegistering ? t('auth.login') : t('auth.register')}
+            </button>
+          </div>
         </div>
       </div>
     </div>

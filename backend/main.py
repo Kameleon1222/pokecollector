@@ -2,10 +2,11 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from api.auth import limiter
 import logging
 import os
 import time
@@ -17,8 +18,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Rate limiter: uses client IP, default 60 requests/minute
-limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
+# Share the limiter with auth routes so signup has its own stricter limit.
 
 
 def read_app_version() -> str:

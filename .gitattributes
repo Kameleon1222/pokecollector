@@ -1,0 +1,2 @@
+# Docker executes these scripts under Linux, including builds from Windows.
+frontend/docker-entrypoint.d/*.sh text eol=lf

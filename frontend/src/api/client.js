@@ -47,6 +47,11 @@ export const login = (username, password) => {
   }).then(r => r.data)
 }
 
+export const register = (username, password) => api.post('/auth/register', { username, password }, {
+  skipAuthentication: true,
+  preserveSessionOnUnauthorized: true,
+}).then(r => r.data)
+
 export const getMe = ({ withoutToken = false, preserveSession = false } = {}) => api.get('/auth/me', {
   skipAuthentication: withoutToken,
   preserveSessionOnUnauthorized: preserveSession,

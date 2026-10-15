@@ -5,7 +5,9 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -15,6 +17,7 @@ from services.auth import create_access_token, decode_token, hash_password, veri
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
@@ -23,6 +26,14 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: dict
+
+
+class RegisterRequest(BaseModel):
+    username: str = Field(..., min_length=2, max_length=32)
+    password: str = Field(..., min_length=8, max_length=72)
+
+    class Config:
+        extra = "forbid"
 
 
 class CreateUserRequest(BaseModel):
@@ -155,6 +166,67 @@ def get_optional_user(token: str = Depends(oauth2_scheme), db: Session = Depends
     except JWTError:
         return None
     return db.query(User).filter(User.id == int(user_id), User.is_active == True).first()
+
+
+@router.post("/register", response_model=TokenResponse, status_code=201)
+@limiter.limit("5/minute")
+def register(request: Request, data: RegisterRequest, db: Session = Depends(get_db)):
+    if not multi_user_enabled(db):
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "registration_unavailable", "message": "Registration requires multi-user mode"},
+        )
+
+    username = data.username.strip()
+    if not 2 <= len(username) <= 32 or not username.isprintable():
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_username", "message": "Username must contain 2-32 printable characters"},
+        )
+    # bcrypt accepts at most 72 bytes, which can be fewer than 72 Unicode characters.
+    if len(data.password.encode("utf-8")) > 72:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_password", "message": "Password must contain at least 8 characters and at most 72 UTF-8 bytes"},
+        )
+    if db.query(User).filter(User.username == username).first():
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "username_taken", "message": "Username is already taken"},
+        )
+
+    # Public signup never accepts roles, account status, or another user's settings.
+    user = User(
+        username=username,
+        hashed_password=hash_password(data.password),
+        role="trainer",
+        is_active=True,
+        must_change_password=False,
+        is_profile_public=False,
+        public_show_values=False,
+        wishlist_visibility="private",
+    )
+    db.add(user)
+    try:
+        db.commit()
+    except IntegrityError:
+        # The unique constraint also protects simultaneous signup requests.
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "username_taken", "message": "Username is already taken"},
+        ) from None
+    db.refresh(user)
+    return TokenResponse(
+        access_token=create_access_token({"sub": str(user.id), "role": user.role}),
+        user={
+            "id": user.id,
+            "username": user.username,
+            "role": user.role,
+            "avatar_id": user.avatar_id,
+            "must_change_password": user.must_change_password,
+        },
+    )
 
 
 @router.post("/login", response_model=TokenResponse)
